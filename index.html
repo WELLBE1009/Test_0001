@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -31,12 +30,12 @@
     <script type="module">
         // --- CONSTANTS ---
         const ACCESS_PASSWORD = "3737";
-        const SPREADSHEET_IDS = {
-            '栄': '1D9HdMEGuRFnp47iA3yEVhoCoxgJJuzcRL99Nw-AWdWE',
-            '今池': '1D9HdMEGuRFnp47iA3yEVhoCoxgJJuzcRL99Nw-AWdWE',
-            '福岡': '1yxCgA9tL7NNCrTKx6OL-_cEfFNa6ui3z2Z0IR_Vsyis'
+        const STORE_CONFIG = {
+            '栄': { id: '1hj6JlN_c2UcHBXXKIVYXL7IUNNiwuxYJ', sheet: '栄' },
+            '今池': { id: '1EDAZMKJ8kVlWLeUJbC3Dox5oNM8DTK3T', sheet: '今池' },
+            '福岡': { id: '1su129OCN0Qw0lvZoNamByW1F1gYX5UmK', sheet: '福岡' },
         };
-        const STORE_NAMES = Object.keys(SPREADSHEET_IDS);
+        const STORE_NAMES = Object.keys(STORE_CONFIG);
         const COMPARISON_KEYS = ['売上日計', 'サウナ', '宿泊売上計', 'マッサージ', 'グリル', '物販'];
         const SUMMABLE_KEYS = [
             '売上日計', 'サウナ', '宿泊売上計', 'マッサージ', 'グリル', '物販',
@@ -57,12 +56,12 @@
             error: null,
             allData: {},
             availableDates: [],
-            selectedDate: localStorage.getItem('dashboard_selectedDate') || '',
-            sortOrder: localStorage.getItem('dashboard_sortOrder') || 'newest',
+            selectedDate: localStorage.getItem('dashboard_selectedDate') ? JSON.parse(localStorage.getItem('dashboard_selectedDate')) : null,
+            sortOrder: localStorage.getItem('dashboard_sortOrder') ? JSON.parse(localStorage.getItem('dashboard_sortOrder')) : 'newest',
             periodSummary: null,
             comparisonPeriodSummary: null,
-            periodStartDate: localStorage.getItem('dashboard_periodStartDate') || '2025-10-01',
-            periodEndDate: localStorage.getItem('dashboard_periodEndDate') || '2025-10-15',
+            periodStartDate: localStorage.getItem('dashboard_periodStartDate') ? JSON.parse(localStorage.getItem('dashboard_periodStartDate')) : '2025-10-01',
+            periodEndDate: localStorage.getItem('dashboard_periodEndDate') ? JSON.parse(localStorage.getItem('dashboard_periodEndDate')) : '2025-10-15',
             isSummarizing: false,
         };
 
@@ -99,7 +98,6 @@
 
             if (data.status === 'error') {
                 const errorMessage = data.errors.map((e) => e.detailed_message).join(', ');
-                // Check for access denied error
                 if (errorMessage.includes('ACCESS_DENIED')) {
                      throw new Error(`'${sheetName}'へのアクセスが拒否されました。シートが「リンクを知っている全員が閲覧可」または「ウェブに公開」に設定されているか確認してください。`);
                 }
@@ -127,7 +125,7 @@
                         }
                     }
                    
-                    const isNumericColumn = COMPARISON_KEYS.includes(colLabel) || originalColLabel.includes('人数') || originalColLabel.includes('件数');
+                    const isNumericColumn = SUMMABLE_KEYS.includes(colLabel);
                     rowData[colLabel] = isNumericColumn ? (typeof value === 'number' ? value : 0) : value;
                 });
                 return rowData;
@@ -137,7 +135,10 @@
 
         async function fetchAllSheetsData() {
             const allData = {};
-            const promises = STORE_NAMES.map(storeName => fetchSheetData(SPREADSHEET_IDS[storeName], storeName));
+            const promises = STORE_NAMES.map(storeName => {
+                const config = STORE_CONFIG[storeName];
+                return fetchSheetData(config.id, config.sheet);
+            });
             
             const results = await Promise.allSettled(promises);
             
@@ -147,8 +148,7 @@
                     allData[storeName] = result.value;
                 } else {
                     console.error(`Failed to fetch data for ${storeName}:`, result.reason);
-                    allData[storeName] = []; // Provide empty data on failure
-                    // Propagate the specific error message to the UI
+                    allData[storeName] = []; 
                     throw result.reason;
                 }
             });
@@ -170,41 +170,6 @@
         }
 
 
-        function getAvailableDates(allData, sortOrder) {
-            const dates = new Set();
-            Object.values(allData).forEach(storeData => {
-                (storeData || []).forEach(item => {
-                    if (item['対象日']) dates.add(item['対象日']);
-                });
-            });
-           
-            const sortedDates = Array.from(dates).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-            return sortOrder === 'newest' ? sortedDates.reverse() : sortedDates;
-        }
-
-
-        function getDataByDate(allData, date) {
-            const result = {};
-            for (const [storeName, storeData] of Object.entries(allData)) {
-                result[storeName] = (storeData || []).find(item => item['対象日'] === date) || null;
-            }
-            return result;
-        }
-
-
-        function summarizeDataByPeriod(allData, startDate, endDate) {
-            const summary = {};
-            STORE_NAMES.forEach(storeName => {
-                summary[storeName] = {};
-                const filteredData = (allData[storeName] || []).filter(item => item['対象日'] >= startDate && item['対象日'] <= endDate);
-               
-                SUMMABLE_KEYS.forEach(key => {
-                    summary[storeName][key] = filteredData.reduce((acc, item) => acc + (item[key] || 0), 0);
-                });
-            });
-            return summary;
-        }
-       
         function calculateComparison(current, previous) {
             if (previous === undefined || previous === null) return { percentage: 'N/A', type: 'same' };
             if (previous === 0) {
@@ -267,6 +232,7 @@
 
         const handleSingleDayCsvDownload = () => {
             const { storeData, comparisonData } = getMemoizedData();
+            if(!state.selectedDate) return;
             const headers = ['店舗', 'カテゴリ', `売上 (${state.selectedDate})`, `前年売上 (${getComparisonDate(state.selectedDate) || 'N/A'})`, '前年比', '差額'];
             const dataGetter = (store, key) => ({
                 current: (storeData[store]?.[key]) || 0,
@@ -326,14 +292,10 @@
             alertContainerEl.appendChild(alertEl);
             lucide.createIcons();
 
-
-            // Fade in
             setTimeout(() => {
                 alertEl.classList.remove('opacity-0', 'translate-y-4');
             }, 10);
 
-
-            // Fade out and remove
             setTimeout(() => {
                 alertEl.classList.add('opacity-0', 'translate-y-4');
                 setTimeout(() => alertEl.remove(), 300);
@@ -396,6 +358,9 @@
 
         function renderDailyReport() {
             const { storeData, comparisonData, comparisonDate } = getMemoizedData();
+            if (!state.selectedDate) {
+                return '<div class="text-center p-8 bg-white rounded-lg shadow">日付を選択してください。</div>';
+            }
             return `
                 <div class="bg-yellow-50 text-yellow-800 p-3 rounded-lg text-sm mb-6 border border-yellow-200 flex items-center gap-2">
                     <i data-lucide="info" class="w-4 h-4 flex-shrink-0"></i>
@@ -405,7 +370,6 @@
                     ${STORE_NAMES.map(storeName => {
                         const data = storeData[storeName];
                         const prevData = comparisonData[storeName];
-
 
                         if (!data) {
                             return `
@@ -419,7 +383,6 @@
                                 </div>`;
                         }
 
-
                         return `
                             <div class="space-y-6">
                                 <div class="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6 rounded-xl shadow-xl">
@@ -429,10 +392,9 @@
                                     </p>
                                 </div>
                                 ${renderSalesCard({ title: "売上日計", data, prevData, dataKey: "売上日計" })}
-                                ${renderSalesCard({ title: "サウナ", data, prevData, dataKey: "サウナ", subKeys: SUB_ITEM_MAP['サウナ'] })}
-                                ${renderSalesCard({ title: "宿泊売上計", data, prevData, dataKey: "宿泊売上計", subKeys: SUB_ITEM_MAP['宿泊売上計'] })}
-                                ${renderSalesCard({ title: "マッサージ", data, prevData, dataKey: "マッサージ", subKeys: SUB_ITEM_MAP['マッサージ'] })}
-                                ${renderSalesCard({ title: "グリル", data, prevData, dataKey: "グリル", subKeys: SUB_ITEM_MAP['グリル'] })}
+                                ${Object.entries(SUB_ITEM_MAP).map(([key, subItems]) => 
+                                   renderSalesCard({ title: key, data, prevData, dataKey: key, subKeys: subItems })
+                                ).join('')}
                                 ${renderSalesCard({ title: "物販", data, prevData, dataKey: "物販" })}
                             </div>`;
                     }).join('')}
@@ -448,7 +410,6 @@
                     </div>`;
             }
 
-
             if (!state.periodSummary) {
                 return `
                     <div class="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
@@ -456,7 +417,6 @@
                         <p class="text-slate-500">期間を設定し、「集計実行」ボタンを押してください。</p>
                     </div>`;
             }
-
 
             const categoryMap = [
                 { key: 'サウナ', label: 'サウナ', subItems: [{ key: '人数(S)', label: '人数', unit: '人' }] },
@@ -469,7 +429,6 @@
             const start = state.periodStartDate.replace(/-/g, '/');
             const end = state.periodEndDate.replace(/-/g, '/');
 
-
             return `
                 <div class="bg-indigo-50 text-indigo-800 p-4 rounded-lg text-base mb-6 border border-indigo-200">
                     <p><strong>対象期間:</strong> ${start} 〜 ${end}</p>
@@ -481,7 +440,6 @@
                         const prevData = state.comparisonPeriodSummary?.[storeName];
                         const currentTotal = currentData['売上日計'] || 0;
                         const prevTotal = prevData?.['売上日計'];
-
 
                         return `
                             <div class="bg-white p-6 rounded-xl shadow-lg border-2 border-indigo-100 hover:shadow-xl transition-shadow">
@@ -581,7 +539,7 @@
              return `
                 <div class="min-h-screen flex items-center justify-center p-4">
                     <div class="text-center max-w-lg">
-                        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4" role="alert">
+                         <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4" role="alert">
                             <strong class="font-bold">エラーが発生しました</strong>
                             <span class="block sm:inline mt-1">${state.error}</span>
                         </div>
@@ -593,6 +551,9 @@
         }
        
         function renderDashboard() {
+            const isLoading = state.loading && Object.keys(state.allData).length === 0;
+            const isRefreshing = state.loading && !isLoading;
+
             return `
                 <div class="min-h-screen p-4 sm:p-8">
                     <div class="max-w-7xl mx-auto">
@@ -619,7 +580,7 @@
                                         <i data-lucide="download" class="w-4 h-4"></i>CSV (単日)
                                     </button>
                                     <button id="reload-btn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 font-semibold shadow-md">
-                                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>データ更新
+                                        <i data-lucide="refresh-cw" class="w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}"></i>データ更新
                                     </button>
                                 </div>
                             </div>
@@ -647,9 +608,9 @@
             if (!state.selectedDate || Object.keys(state.allData).length === 0) {
                 return { storeData: {}, comparisonDate: null, comparisonData: {} };
             }
-            const currentStoreData = getDataByDate(state.allData, state.selectedDate);
+            const currentStoreData = Object.fromEntries(STORE_NAMES.map(name => [name, state.allData[name]?.find(item => item['対象日'] === state.selectedDate) || null]));
             const compDate = getComparisonDate(state.selectedDate);
-            const compData = compDate ? getDataByDate(state.allData, compDate) : {};
+            const compData = compDate ? Object.fromEntries(STORE_NAMES.map(name => [name, state.allData[name]?.find(item => item['対象日'] === compDate) || null])) : {};
            
             memoizedData = {
                 storeData: currentStoreData,
@@ -678,14 +639,14 @@
 
         function handleDateChange(e) {
             state.selectedDate = e.target.value;
-            localStorage.setItem('dashboard_selectedDate', state.selectedDate);
+            localStorage.setItem('dashboard_selectedDate', JSON.stringify(state.selectedDate));
             renderApp();
         }
 
 
         function handleSortChange(e) {
             state.sortOrder = e.target.value;
-            localStorage.setItem('dashboard_sortOrder', state.sortOrder);
+            localStorage.setItem('dashboard_sortOrder', JSON.stringify(state.sortOrder));
             loadData();
         }
 
@@ -698,16 +659,24 @@
             state.isSummarizing = true;
             renderApp();
 
-
             setTimeout(() => {
                 const start = state.periodStartDate.replace(/-/g, '/');
                 const end = state.periodEndDate.replace(/-/g, '/');
-                state.periodSummary = summarizeDataByPeriod(state.allData, start, end);
+                
+                state.periodSummary = Object.fromEntries(STORE_NAMES.map(storeName => {
+                    const filteredData = (state.allData[storeName] || []).filter(item => item['対象日'] >= start && item['対象日'] <= end);
+                    const storeSummary = Object.fromEntries(SUMMABLE_KEYS.map(key => [key, filteredData.reduce((acc, item) => acc + (item[key] || 0), 0)]));
+                    return [storeName, storeSummary];
+                }));
                 
                 const compStart = getComparisonDate(start);
                 const compEnd = getComparisonDate(end);
                 if(compStart && compEnd) {
-                    state.comparisonPeriodSummary = summarizeDataByPeriod(state.allData, compStart, compEnd);
+                    state.comparisonPeriodSummary = Object.fromEntries(STORE_NAMES.map(storeName => {
+                        const filteredData = (state.allData[storeName] || []).filter(item => item['対象日'] >= compStart && item['対象日'] <= compEnd);
+                        const storeSummary = Object.fromEntries(SUMMABLE_KEYS.map(key => [key, filteredData.reduce((acc, item) => acc + (item[key] || 0), 0)]));
+                        return [storeName, storeSummary];
+                    }));
                 } else {
                     state.comparisonPeriodSummary = null;
                 }
@@ -722,22 +691,31 @@
         async function loadData() {
             state.loading = true;
             state.error = null;
-            state.periodSummary = null;
+            // Don't clear period summary on manual refresh
+            // state.periodSummary = null;
             renderApp();
 
 
             try {
                 const data = await fetchAllSheetsData();
                 state.allData = data;
-                const dates = getAvailableDates(data, state.sortOrder);
-                state.availableDates = dates;
-                if (dates.length > 0) {
-                    const savedDate = localStorage.getItem('dashboard_selectedDate');
-                    if (savedDate && dates.includes(savedDate)) {
-                        state.selectedDate = savedDate;
-                    } else {
-                        state.selectedDate = dates[0];
-                        localStorage.setItem('dashboard_selectedDate', state.selectedDate);
+                
+                const datesSet = new Set();
+                Object.values(data).forEach(storeData => {
+                    (storeData || []).forEach(item => {
+                        if (item['対象日']) datesSet.add(item['対象日']);
+                    });
+                });
+
+                const sortedDates = Array.from(datesSet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+                if (state.sortOrder === 'newest') sortedDates.reverse();
+
+                state.availableDates = sortedDates;
+
+                if (sortedDates.length > 0) {
+                     if (!state.selectedDate || !datesSet.has(state.selectedDate)) {
+                        state.selectedDate = sortedDates[0];
+                        localStorage.setItem('dashboard_selectedDate', JSON.stringify(state.selectedDate));
                     }
                 } else {
                     state.error = "利用可能なデータがありません。";
@@ -757,18 +735,14 @@
             const dateSelect = document.getElementById('date-select');
             if (dateSelect) dateSelect.addEventListener('change', handleDateChange);
 
-
             const sortSelect = document.getElementById('sort-select');
             if (sortSelect) sortSelect.addEventListener('change', handleSortChange);
-
 
             const reloadBtn = document.getElementById('reload-btn');
             if (reloadBtn) reloadBtn.addEventListener('click', loadData);
 
-
             const csvDailyBtn = document.getElementById('csv-daily-btn');
             if(csvDailyBtn) csvDailyBtn.addEventListener('click', handleSingleDayCsvDownload);
-
 
             const csvPeriodBtn = document.getElementById('csv-period-btn');
             if(csvPeriodBtn) csvPeriodBtn.addEventListener('click', handlePeriodSummaryCsvDownload);
@@ -776,15 +750,14 @@
             const startDateInput = document.getElementById('start-date');
             if(startDateInput) startDateInput.addEventListener('change', e => {
                 state.periodStartDate = e.target.value;
-                localStorage.setItem('dashboard_periodStartDate', e.target.value);
+                localStorage.setItem('dashboard_periodStartDate', JSON.stringify(e.target.value));
             });
            
             const endDateInput = document.getElementById('end-date');
             if(endDateInput) endDateInput.addEventListener('change', e => {
                 state.periodEndDate = e.target.value;
-                localStorage.setItem('dashboard_periodEndDate', e.target.value);
+                localStorage.setItem('dashboard_periodEndDate', JSON.stringify(e.target.value));
             });
-
 
             const summarizeBtn = document.getElementById('summarize-btn');
             if(summarizeBtn) summarizeBtn.addEventListener('click', handleSummarize);
@@ -792,7 +765,9 @@
 
 
         function renderApp() {
-            if (state.loading) {
+            const isLoading = state.loading && Object.keys(state.allData).length === 0;
+
+            if (isLoading) {
                 rootEl.innerHTML = renderLoader('データを読み込んでいます...');
             } else if (state.error) {
                 rootEl.innerHTML = renderErrorState();
